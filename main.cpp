@@ -64,7 +64,6 @@ int main(int argc, char** argv)
   const std::string& pose_topic = FLAGS_pose_topic;
 
   std::vector<std::string> topics;
-  //
 
   topics.push_back(event_topic);
   topics.push_back(camera_info_topic);
@@ -76,7 +75,7 @@ int main(int argc, char** argv)
   // int count;
   // double start,end;
   // double stamp = FLAGS_stop_time_s;
-  std::string path, num, file;
+  std::string path, path2, num, file;
   bool continue_looping_through_bag = true;
   bool got_initial_stamp = false;
   ros::Time initial_timestamp;
@@ -84,9 +83,22 @@ int main(int argc, char** argv)
   double et1,et2;
   int count = 0;
 
+  path = "./result/poses";
+  num = std::to_string(count);
+  file=".txt";
+
+  path += num;
+  path += file;
+
+  std::ofstream pose_fout;
+  pose_fout.open(path);
+
   BOOST_FOREACH(rosbag::MessageInstance const m, view)
   {
-    events_.clear();
+    //events_.clear();
+
+    // LOG(INFO) << "events_: " << events_.size();
+    // LOG(INFO) << "count: " << count;
 
     const std::string& topic_name = m.getTopic();
     VLOG(2) << topic_name;
@@ -107,7 +119,7 @@ int main(int argc, char** argv)
         
         const ros::Time& stamp = msg->events[0].ts;
 
-        LOG(INFO) << "stamp: " <<  stamp;
+        // LOG(INFO) << "stamp: " <<  stamp;
 
         if(!got_initial_stamp)
         {
@@ -134,107 +146,198 @@ int main(int argc, char** argv)
 
           dvs_msgs::Event ev_modified(msg->events[i]);
           ev_modified.ts = ros::Time(ev_modified.ts.toSec() - initial_timestamp.toSec());
-          events_.push_back(ev_modified); // event total number
-        }
-
-        LOG(INFO) << "events_: " << events_.size();
-        LOG(INFO) << "poses_: " << poses_.size();
-
-        image_geometry::PinholeCameraModel cam;
-        cam.fromCameraInfo(camera_info_msg);
-
-        // // Use linear interpolation to compute the camera pose for each event
-        LinearTrajectory trajectory = LinearTrajectory(poses_);
-        // LOG(INFO) << "poses : " << poses.size();
-
-        // // Set the position of the reference view in the middle of the trajectory 
-        geometry_utils::Transformation T0_, T1_;
-        ros::Time t0_, t1_;
-
-        trajectory.getFirstControlPose(&T0_, &t0_);
-        trajectory.getLastControlPose(&T1_, &t1_);
-        geometry_utils::Transformation T_w_rv;
-
-        // // LOG(INFO) << "T_w_rv : " << T_w_rv; // 4*4 unit matrix
-
-        trajectory.getPoseAt(ros::Time(0.5 * (t0_.toSec() + t1_.toSec())), T_w_rv);
-        geometry_utils::Transformation T_rv_w = T_w_rv.inverse();
-
-        // LOG(INFO) << "t0_ : " << t0_; // 0.043637276
-        // LOG(INFO) << "t1_ : " << t1_; // 2.003728390
-
-        // // LOG(INFO) << "T_rv_w : " << T_rv_w;
-
-        // // Initialize the DSI
-        CHECK_LE(FLAGS_dimZ, 256) << "Number of depth planes should be <= 256";
-        EMVS::ShapeDSI dsi_shape(FLAGS_dimX, FLAGS_dimY, FLAGS_dimZ,
-                                FLAGS_min_depth, FLAGS_max_depth,
-                                FLAGS_fov_deg);
-
-        // // Initialize mapper
-        EMVS::MapperEMVS mapper(cam, dsi_shape);
-
-        // // 1. Back-project events into the DSI
-        std::chrono::high_resolution_clock::time_point t_start_dsi = std::chrono::high_resolution_clock::now();
-
-        mapper.evaluateDSI(events_, trajectory, T_rv_w);
-        std::chrono::high_resolution_clock::time_point t_end_dsi = std::chrono::high_resolution_clock::now();
-        auto duration_dsi = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_dsi - t_start_dsi ).count();
-
-        // LOG(INFO) << "Time to evaluate DSI: " << duration_dsi << " milliseconds";
-        // LOG(INFO) << "Number of events processed: " << events.size() << " events";
-        // LOG(INFO) << "Number of events processed per second: " << static_cast<float>(events.size()) / (1000.f * static_cast<float>(duration_dsi)) << " Mev/s";
-        // LOG(INFO) << "Mean square = " << mapper.dsi_.computeMeanSquare();
-
-        // // Write the DSI (3D voxel grid) to disk
-
-        path = "./result/dsi";
-        num = std::to_string(count);
-        file=".npy";
-
-        path += num;
-        path += file;
-        // mapper.dsi_.writeGridNpy("./result/dsi.npy");
-
-        mapper.dsi_.writeGridNpy(path.c_str());
-
-        // event
-        path = "./result/events";
-        num = std::to_string(count);
-        file=".txt";
-
-        path += num;
-        path += file;
-        
-
-        std::ofstream writeFile(path.data());
-        
-        for(int i=0;i<events_.size();i++){
-          if(writeFile.is_open()){
-            writeFile << events_[i];
+          if ((count+1) % 1 == 0){
+            events_.push_back(ev_modified); // event total number
           }
         }
-        writeFile.close();
-
-        EMVS::OptionsDepthMap opts_depth_map;
-        opts_depth_map.adaptive_threshold_kernel_size_ = FLAGS_adaptive_threshold_kernel_size;
-        opts_depth_map.adaptive_threshold_c_ = FLAGS_adaptive_threshold_c;
-        opts_depth_map.median_filter_size_ = FLAGS_median_filter_size;
-        cv::Mat depth_map, confidence_map, semidense_mask;
-        mapper.getDepthMapFromDSI(depth_map, confidence_map, semidense_mask, opts_depth_map);
         
-        //Save confidence map as an 8-bit image
-        path = "./result/confidence_map";
-        num = std::to_string(count);
-        file=".png";
-        path += num;
-        path += file;
+        if ((count+1) % 40 == 0 && count != 0)
+        {
+          LOG(INFO) << "stamp: " <<  stamp;
+          LOG(INFO) << "events_: " << events_.size();
+          LOG(INFO) << "poses_: " << poses_.size();
+          LOG(INFO) << "count: " << count;
 
-        cv::Mat confidence_map_255;
-        cv::normalize(confidence_map, confidence_map_255, 0, 255.0, cv::NORM_MINMAX, CV_32FC1);
-        cv::imwrite(path.c_str(), confidence_map_255);
+          // LOG(INFO) << "start pose : " << poses_.begin()->first;
+          // LOG(INFO) << "end pose : " << poses_.rbegin()->first;
 
-        poses_.clear();
+          // LOG(INFO) << "start pose2 : \n" << poses_.begin()->second;
+          // LOG(INFO) << "end pose2 : \n" << poses_.rbegin()->second;
+
+
+          image_geometry::PinholeCameraModel cam;
+          cam.fromCameraInfo(camera_info_msg);
+
+          // // Use linear interpolation to compute the camera pose for each event
+          LinearTrajectory trajectory = LinearTrajectory(poses_);
+
+          // // Set the position of the reference view in the middle of the trajectory 
+          geometry_utils::Transformation T0_, T1_;
+          ros::Time t0_, t1_;
+
+          trajectory.getFirstControlPose(&T0_, &t0_);
+          trajectory.getLastControlPose(&T1_, &t1_);   
+
+          geometry_utils::Transformation T_w_rv;
+
+
+          // std::ofstream fout;
+          // fout.open("./wrv.txt");
+
+          //LOG(INFO) << "T_w_rv : \n" << T_w_rv; // 4*4 unit matrix
+
+          trajectory.getPoseAt(ros::Time(0.5 * (t0_.toSec() + t1_.toSec())), T_w_rv);
+          //LOG(INFO) << ros::Time(0.5 * (t0_.toSec() + t1_.toSec()));
+
+          //LOG(INFO) << "t0_.toSec(): " << t0_.toSec();
+          //LOG(INFO) << "t1_.toSec(): " << t1_.toSec();
+
+          // LOG(INFO) << "T_w_rv : \n" << T_w_rv;
+          // fout << T_w_rv;
+          // fout.close();
+
+          geometry_utils::Transformation T_rv_w = T_w_rv.inverse();
+
+          // LOG(INFO) << "t0_ : " << t0_; // 0.043637276
+          // LOG(INFO) << "t1_ : " << t1_; // 2.003728390
+
+          // LOG(INFO) << "T_rv_w : " << T_rv_w;
+
+          // // Initialize the DSI
+          CHECK_LE(FLAGS_dimZ, 256) << "Number of depth planes should be <= 256";
+          EMVS::ShapeDSI dsi_shape(FLAGS_dimX, FLAGS_dimY, FLAGS_dimZ,
+                                  FLAGS_min_depth, FLAGS_max_depth,
+                                  FLAGS_fov_deg);
+
+          // // Initialize mapper
+          EMVS::MapperEMVS mapper(cam, dsi_shape);
+
+          // // 1. Back-project events into the DSI
+          std::chrono::high_resolution_clock::time_point t_start_dsi = std::chrono::high_resolution_clock::now();
+
+          mapper.evaluateDSI(events_, trajectory, T_rv_w);
+          std::chrono::high_resolution_clock::time_point t_end_dsi = std::chrono::high_resolution_clock::now();
+          auto duration_dsi = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_dsi - t_start_dsi ).count();
+
+          // LOG(INFO) << "Time to evaluate DSI: " << duration_dsi << " milliseconds";
+          // LOG(INFO) << "Number of events processed: " << events.size() << " events";
+          // LOG(INFO) << "Number of events processed per second: " << static_cast<float>(events.size()) / (1000.f * static_cast<float>(duration_dsi)) << " Mev/s";
+          LOG(INFO) << "Mean square = " << mapper.dsi_.computeMeanSquare();
+
+          // // Write the DSI (3D voxel grid) to disk
+
+          path = "./result/dsi";
+          num = std::to_string(count);
+          file=".npy";
+
+          path += num;
+          path += file;
+          // mapper.dsi_.writeGridNpy("./result/dsi.npy");
+
+          mapper.dsi_.writeGridNpy(path.c_str());
+
+          // // p
+          // path = "./result/poses";
+          // num = std::to_string(count);
+          // file=".txt";
+
+          // path += num;
+          // path += file;
+
+          // std::ofstream fout;
+          // fout.open(path);
+          // fout << p << "\n";
+
+          // std::ofstream writeFile(path.data());
+          
+          // for(int i=0;i<poses_.size();i++){
+          //   fout << poses_[i] << "\n";
+          // }
+
+          // fout.close();
+
+          // event
+          // path = "./result/events";
+          // num = std::to_string(count);
+          // file=".txt";
+
+          // path += num;
+          // path += file;
+          
+
+          // std::ofstream writeFile(path.data());
+          
+          // for(int i=0;i<events_.size();i++){
+          //   if(writeFile.is_open()){
+          //     writeFile << events_[i].ts << " " << events_[i].x << " " << events_[i].y << " " << events_[i].polarity << "\r\n";
+          //   }
+          // }
+          // writeFile.close();
+
+
+          EMVS::OptionsDepthMap opts_depth_map;
+          opts_depth_map.adaptive_threshold_kernel_size_ = FLAGS_adaptive_threshold_kernel_size;
+          opts_depth_map.adaptive_threshold_c_ = FLAGS_adaptive_threshold_c;
+          opts_depth_map.median_filter_size_ = FLAGS_median_filter_size;
+          cv::Mat depth_map, confidence_map, semidense_mask;
+          mapper.getDepthMapFromDSI(depth_map, confidence_map, semidense_mask, opts_depth_map);
+          
+          //Save confidence map as an 8-bit image
+          path = "./result/confidence_map";
+          num = std::to_string(count);
+          file=".png";
+          path += num;
+          path += file;
+
+          cv::Mat confidence_map_255;
+          cv::normalize(confidence_map, confidence_map_255, 0, 255.0, cv::NORM_MINMAX, CV_32FC1);
+          cv::imwrite(path.c_str(), confidence_map_255);
+
+          // Normalize depth map using given min and max depth values
+          path = "./result/depth_map";
+          num = std::to_string(count);
+          file=".png";
+          path += num;
+          path += file;
+
+          cv::Mat depth_map_255 = (depth_map - dsi_shape.min_depth_) * (255.0 / (dsi_shape.max_depth_ - dsi_shape.min_depth_));
+          cv::imwrite(path.c_str(), depth_map_255);
+
+          // Save pseudo-colored depth map on white canvas
+          path = "./result/depth_color_map";
+          num = std::to_string(count);
+          file=".png";
+          path += num;
+          path += file;
+
+          cv::Mat depthmap_8bit, depthmap_color;
+          depth_map_255.convertTo(depthmap_8bit, CV_8U);
+          cv::applyColorMap(depthmap_8bit, depthmap_color, cv::COLORMAP_RAINBOW);
+          cv::Mat depth_on_canvas = cv::Mat(depth_map.rows, depth_map.cols, CV_8UC3, cv::Scalar(1,1,1)*255);
+          depthmap_color.copyTo(depth_on_canvas, semidense_mask);
+
+          cv::imwrite(path.c_str(), depth_on_canvas);
+
+          // 3. Convert semi-dense depth map to point cloud  
+          EMVS::OptionsPointCloud opts_pc;
+          opts_pc.radius_search_ = FLAGS_radius_search;
+          opts_pc.min_num_neighbors_ = FLAGS_min_num_neighbors;
+          
+          EMVS::PointCloud::Ptr pc (new EMVS::PointCloud);
+          mapper.getPointcloud(depth_map, semidense_mask, opts_pc, pc);
+
+          path = "./result/pointcloud";
+          num = std::to_string(count);
+          file=".pcd";
+          path += num;
+          path += file;
+          
+          // Save point cloud to disk
+          pcl::io::savePCDFileASCII (path.c_str(), *pc);
+
+          events_.clear();
+          poses_.clear();
+        }
         count += 1;
       }
     }
@@ -243,6 +346,7 @@ int main(int argc, char** argv)
     if (topic_name == topics[1])
     {
       camera_info_msg = *(m.instantiate<sensor_msgs::CameraInfo>());
+      // LOG(INFO) << "camera_info : " << camera_info_msg;
     }
 
     // Pose
@@ -269,6 +373,24 @@ int main(int argc, char** argv)
         continue_looping_through_bag = false;
       }
 
+
+
+      if (poses_.size() == 0)
+      {
+        path = "./result/poses";
+        num = std::to_string(count);
+        file=".txt";
+
+        path += num;
+        path += file;
+
+        std::ofstream pose_fout;
+        pose_fout.open(path);
+      }
+
+      // LOG(INFO) << pose_msg.header.stamp << " " << pose_msg.pose.position.x << " " << pose_msg.pose.position.y << " " << pose_msg.pose.position.z << " " << pose_msg.pose.orientation.w << " " << pose_msg.pose.orientation.x << " " << pose_msg.pose.orientation.y << " " << pose_msg.pose.orientation.z << "\n";
+      pose_fout << pose_msg.header.stamp << " " << pose_msg.pose.position.x << " " << pose_msg.pose.position.y << " " << pose_msg.pose.position.z << " " << pose_msg.pose.orientation.x << " " << pose_msg.pose.orientation.y << " " << pose_msg.pose.orientation.z << " " << pose_msg.pose.orientation.w << "\n";
+      
       const Eigen::Vector3d position(pose_msg.pose.position.x,
                                      pose_msg.pose.position.y,
                                      pose_msg.pose.position.z);
@@ -277,7 +399,14 @@ int main(int argc, char** argv)
                                     pose_msg.pose.orientation.y,
                                     pose_msg.pose.orientation.z);
       geometry_utils::Transformation T(position, quat);
+      
+      // LOG(INFO) << "position(x,y,z):\n" << position;
+      // LOG(INFO) << "orientation:\n" << pose_msg.pose.orientation.w;
+      // LOG(INFO) << T;
+
+
       poses_.insert(std::pair<ros::Time, geometry_utils::Transformation>(ros::Time(pose_msg.header.stamp.toSec() - initial_timestamp.toSec()), T));
+      // LOG(INFO) << "pose info : " << pose_msg.header.stamp.toSec(); //0.001
     }
 
     std::sort(events_.begin(), events_.end(),

@@ -2,6 +2,12 @@
 #include <mapper_emvs/median_filtering.hpp>
 #include <pcl/filters/radius_outlier_removal.h>
 
+#include <fstream>
+
+int count = 0;
+int flag = 0;
+std::string path, path2, num, file;
+
 namespace EMVS {
 
 using namespace geometry_utils;
@@ -11,6 +17,14 @@ MapperEMVS::MapperEMVS(const image_geometry::PinholeCameraModel& cam,
   : dvs_cam_(cam)
   , dsi_shape_(dsi_shape)
 {
+  path2 = "./result/camera_intrinsic.txt";
+  std::ofstream fout2;
+  fout2.open(path2);
+  fout2 << dvs_cam_.fx() << " " << dvs_cam_.fy() << " " << dvs_cam_.cx() << " " << dvs_cam_.cy() << "\n";
+  
+
+  fout2.close();
+
   cv::Size full_resolution = cam.fullResolution();
   width_ = full_resolution.width;
   height_ = full_resolution.height;
@@ -18,9 +32,6 @@ MapperEMVS::MapperEMVS(const image_geometry::PinholeCameraModel& cam,
   K_ << dvs_cam_.fx(), 0.f, dvs_cam_.cx(),
       0.f, dvs_cam_.fy(), dvs_cam_.cy(),
       0.f, 0.f, 1.f;
-
-  // add
-  // LOG(INFO) << "camera intrinsic : " << K_;
 
   setupDSI();
 
@@ -38,27 +49,29 @@ bool MapperEMVS::evaluateDSI(const std::vector<dvs_msgs::Event>& events,
     return false;
   }
 
-  // LOG(INFO) << "events : " << events;
-  // LOG(INFO) << "trajectory : " << trajectory;
-  // LOG(INFO) << "T_rv_w : " << T_rv_w;
-
   // 2D coordinates of the events transferred to reference view using plane Z = Z_0.
   // We use Vector4f because Eigen is optimized for matrix multiplications with inputs whose size is a multiple of 4
   static std::vector<Eigen::Vector4f> event_locations_z0;
-
   event_locations_z0.clear();
 
   // List of camera centers
   static std::vector<Eigen::Vector3f> camera_centers;
-
   camera_centers.clear();
 
   // Loop through the events, grouping them in packets of frame_size_ events
   size_t current_event_ = 0;
+  // std::ofstream fout;
+  // fout.open("./H_z0_px.txt");
+  path = "./result/events";
+  num = std::to_string(count);
+  file=".txt";
 
-  // LOG(INFO) << "events.size() : " << events.size();
-  // LOG(INFO) << "packet_size_ : " << packet_size_; //1024
+  path += num;
+  path += file;
 
+  std::ofstream fout;
+  fout.open(path);
+  
   while(current_event_ + packet_size_ < events.size())
   {
     // Events in a packet are assigned the same timestamp (mid-point), for efficiency
@@ -67,57 +80,77 @@ bool MapperEMVS::evaluateDSI(const std::vector<dvs_msgs::Event>& events,
     Transformation T_w_ev; // from event camera to world
     Transformation T_rv_ev; // from event camera to reference viewpoint
 
-    // LOG(INFO) << "T_w_ev : " << T_w_ev; // 4*4 unit matrix
-    // LOG(INFO) << "T_rv_ev : " << T_rv_ev; // 4*4 unit matrix
+    // LOG(INFO) << "frame ts : " << frame_ts;
 
     if(!trajectory.getPoseAt(frame_ts, T_w_ev))
     {
-      current_event_++; // within the
+      current_event_++;
       continue;
     }
 
-    // LOG(INFO) << "current_event_ : " << current_event_; 1024 patch size
+    // LOG(INFO) << "T_rv_w" << T_rv_w;
+    // LOG(INFO) << "T_w_ev" << T_w_ev;
 
+    T_rv_ev = T_rv_w * T_w_ev;
 
-    T_rv_ev = T_rv_w * T_w_ev; //reference viewpoint -> world * world -> event camera
-
-    // LOG(INFO) << "T_rv_ev : " << T_rv_ev;  
+    // LOG(INFO) << "T_rv_ev" << T_rv_ev;
 
     const Transformation T_ev_rv = T_rv_ev.inverse();
+
+    // LOG(INFO) << "T_ev_rv" << T_ev_rv;
+
     const Eigen::Matrix3f R = T_ev_rv.getRotationMatrix().cast<float>();
     const Eigen::Vector3f t = T_ev_rv.getPosition().cast<float>();
-    
-    // LOG(INFO) << "R : " << R;  // 3*3
-    // LOG(INFO) << "t : " << t;  // 3*1
 
+    // LOG(INFO) << "R :\n" << R;
+    // LOG(INFO) << "t :\n" << t;
 
     // Optical center of the event camera in the coordinate frame of the reference view
-    camera_centers.push_back(-R.transpose() * t);
+    // LOG(INFO) << "-R.transpose():\n" << -R.transpose();
+    // LOG(INFO) << "-R.transpose() * t:\n" << -R.transpose() * t;
 
+    // fout << T_w_ev << "\n";
+    
+    camera_centers.push_back(-R.transpose() * t);
+    
     // Project the points on plane at distance z0
     const float z0 = raw_depths_vec_[0];
-    // LOG(INFO) << "z0 : " << z0; //max depth 6.0
+    // LOG(INFO)<< "z0 :" << z0;
 
     // Planar homography  (H_z0)^-1 that maps a point in the reference view to the event camera through plane Z = Z0 (Eq. (8) in the IJCV paper)
     Eigen::Matrix3f H_z0_inv = R;
+    // LOG(INFO) << "H_z0_inv : \n" << H_z0_inv;
+
     H_z0_inv *= z0;
-    // LOG(INFO) << "H_z0_inv1 : " << H_z0_inv;
+    // LOG(INFO) << "H_z0_inv2 : \n" << H_z0_inv;
+
     H_z0_inv.col(2) += t;
-    // LOG(INFO) << "H_z0_inv2 : " << H_z0_inv;
+    // LOG(INFO) << "H_z0_inv3 : \n" << H_z0_inv;
+
+    // LOG(INFO) << "H_z0_inv : \n" << H_z0_inv;
 
     // Compute H_z0 in pixel coordinates using the intrinsic parameters
-    Eigen::Matrix3f H_z0_inv_px = K_ * H_z0_inv * virtual_cam_.Kinv_;
-    Eigen::Matrix3f H_z0_px = H_z0_inv_px.inverse();
+    // LOG(INFO) << "calibration : \n" << K_;
+    // LOG(INFO) << "kinv : \n" << virtual_cam_.Kinv_;
 
-    //LOG(INFO) << "H_z0_inv_px : " << H_z0_inv_px;
-    //LOG(INFO) << "H_z0_px : " << H_z0_px;
+    // LOG(INFO) << "H_z0_inv : \n" << H_z0_inv;
+
+    Eigen::Matrix3f H_z0_inv_px = K_ * H_z0_inv * virtual_cam_.Kinv_;
+    // LOG(INFO) << "H_z0_inv_px : \n" << H_z0_inv_px;
+
+
+    Eigen::Matrix3f H_z0_px = H_z0_inv_px.inverse();
+    // LOG(INFO) << "H_z0_px : \n" << H_z0_px;
+
+    // LOG(INFO) << "H_z0_px : " << H_z0_inv_px;
+    // fout << H_z0_px << "\n";
 
     // Use a 4x4 matrix to allow Eigen to optimize the speed
     Eigen::Matrix4f H_z0_px_4x4;
     H_z0_px_4x4.block<3,3>(0,0) = H_z0_px;
     H_z0_px_4x4.col(3).setZero();
     H_z0_px_4x4.row(3).setZero();
-    // LOG(INFO) << "H_z0_px_4x4 : " << H_z0_px_4x4;
+    // LOG(INFO) << "H_z0_px_4x4 : \n" << H_z0_px_4x4; 
 
     // For each packet, precompute the warped event locations according to Eq. (11) in the IJCV paper.
     for (size_t i=0; i < packet_size_; ++i)
@@ -125,23 +158,40 @@ bool MapperEMVS::evaluateDSI(const std::vector<dvs_msgs::Event>& events,
       const dvs_msgs::Event& e = events[current_event_++];
       Eigen::Vector4f p;
 
+      // LOG(INFO) << "x : " << e.x;
+      // LOG(INFO) << "y : " << e.y;
+      // LOG(INFO) << "width : " << width_;
+      fout << e.ts << " " << e.x << " " << e.y << " " << int(e.polarity) << "\n";
+
       p.head<2>() = precomputed_rectified_points_.col(e.y * width_ + e.x);
       p[2] = 1.;
       p[3] = 0.;
 
+      // fout << p << "\n";
+
       p = H_z0_px_4x4 * p;
+      // fout << p << "\n";
+
       p /= p[2];
 
-      // LOG(INFO) << "p : " << p; // x,y,1,0
+      // fout << p << "\n";
+
+      // LOG(INFO) << "H_z0_px_4x4 : \n" << H_z0_px_4x4; 
+
+      // LOG(INFO) << "p0 :" << p[0];
+      // LOG(INFO) << "p1 :" << p[1];
 
       event_locations_z0.push_back(p);
     }
   }
+  fout.close();
+  count += 1;
 
+  // fout.close();
+  
   dsi_.resetGrid();
 
   fillVoxelGrid(event_locations_z0, camera_centers);
-
   return true;
 }
 
@@ -160,27 +210,60 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
 
   const float z0 = raw_depths_vec_[0];
 
+  // for(int i = 0; i<100; i++){
+  //   LOG(INFO) << "z0" << raw_depths_vec_[i];
+  // }
+
+  // std::ofstream fout;
+  // fout.open("./point.txt");
+
   // Parallelize over the planes of the DSI with OpenMP
   // (each thread will process a different depth plane)
   #pragma omp parallel for if (event_locations_z0.size() >= 20000)
   for(size_t depth_plane = 0; depth_plane < raw_depths_vec_.size(); ++depth_plane)
   {
-    const Eigen::Vector4f* pe = &event_locations_z0[0];
-    float *pgrid = dsi_.getPointerToSlice(depth_plane);
+    //LOG(INFO) << "depth plane" << depth_plane;
 
+    const Eigen::Vector4f* pe = &event_locations_z0[0];
+
+    float *pgrid = dsi_.getPointerToSlice(depth_plane);
+    //fout << dsi_.getPointerToSlice(depth_plane) << "\n"; 
+    
     for (size_t packet=0; packet < camera_centers.size(); ++packet)
     {
       // Precompute coefficients for Eq. (15)
       const Eigen::Vector3f& C = camera_centers[packet];
+
+      // LOG(INFO) << "depth_plane \n" << depth_plane;
+      // LOG(INFO) << "raw_depths_vec_\n" << raw_depths_vec_[depth_plane];
+
       const float zi = static_cast<float>(raw_depths_vec_[depth_plane]),
           a = z0 * (zi - C[2]),
+          //a = z0,
           bx = (z0 - zi) * (C[0] * virtual_cam_.fx_ + C[2] * virtual_cam_.cx_),
           by = (z0 - zi) * (C[1] * virtual_cam_.fy_ + C[2] * virtual_cam_.cy_),
           d = zi * (z0 - C[2]);
+          //d = zi;
+      
+      // LOG(INFO) << "C[0] : " << C[0];
+      // LOG(INFO) << "C[1] : " << C[1];
+      // LOG(INFO) << "C[2] : " << C[2];
+
+      // LOG(INFO) << "fx :" << virtual_cam_.fx_;
+
+      // LOG(INFO) << "zi : " << zi;
+      // LOG(INFO) << "a : " << a;
+      // LOG(INFO) << "bx : " << bx;
+      // LOG(INFO) << "by : " << by;
+      // LOG(INFO) << "d : " <<d;
+
+    
+      // LOG(INFO) << "packet_size_/N :" << packet_size_/N;
 
       // Update voxel grid now, N events per iteration
       for(size_t batch=0; batch < packet_size_ / N; ++batch, pe += N)
       {
+
         // Eq. (15)
         Arrayf X, Y;
         for (size_t i=0; i < N; ++i)
@@ -188,8 +271,10 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
           X[i] = pe[i][0];
           Y[i] = pe[i][1];
         }
+
         X = (X * a + bx) / d;
         Y = (Y * a + by) / d;
+
 
         for (size_t i=0; i < N; ++i)
         {
@@ -199,6 +284,7 @@ void MapperEMVS::fillVoxelGrid(const std::vector<Eigen::Vector4f>& event_locatio
       }
     }
   }
+  // fout.close();
 }
 
 
@@ -208,6 +294,7 @@ void MapperEMVS::setupDSI()
   CHECK_GT(dsi_shape_.max_depth_ , dsi_shape_.min_depth_);
 
   depths_vec_ = TypeDepthVector(dsi_shape_.min_depth_, dsi_shape_.max_depth_, dsi_shape_.dimZ_);
+
   raw_depths_vec_ = depths_vec_.getDepthVector();
 
   dsi_shape_.dimX_ = (dsi_shape_.dimX_ > 0) ? dsi_shape_.dimX_ : dvs_cam_.fullResolution().width;
@@ -216,15 +303,16 @@ void MapperEMVS::setupDSI()
   float f_virtual_cam_;
   if (dsi_shape_.fov_ < 10.f)
   {
-    //LOG(INFO) << "Specified DSI FoV < 10 deg. Will use camera FoV instead.";
+    LOG(INFO) << "Specified DSI FoV < 10 deg. Will use camera FoV instead.";
     f_virtual_cam_ = dvs_cam_.fx();
   }
   else
   {
     const float dsi_fov_rad = dsi_shape_.fov_ * CV_PI / 180.0;
+    LOG(INFO) << "CV_PI : " << CV_PI;
     f_virtual_cam_ = 0.5 * (float) dsi_shape_.dimX_ / std::tan(0.5 * dsi_fov_rad);
   }
-  //LOG(INFO) << "Focal length of virtual camera: " << f_virtual_cam_ << " pixels";
+  // LOG(INFO) << "Focal length of virtual camera: " << f_virtual_cam_ << " pixels";
 
   virtual_cam_ = PinholeCamera(dsi_shape_.dimX_, dsi_shape_.dimY_,
                                f_virtual_cam_, f_virtual_cam_,
